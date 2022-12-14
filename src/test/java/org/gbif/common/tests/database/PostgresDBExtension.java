@@ -14,17 +14,15 @@
 package org.gbif.common.tests.database;
 
 import java.time.Duration;
-import javax.sql.DataSource;
+import java.util.ArrayList;
+import java.util.List;
 
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
 import liquibase.Contexts;
 import liquibase.Liquibase;
 import liquibase.database.Database;
 import liquibase.database.DatabaseFactory;
 import liquibase.database.jvm.JdbcConnection;
 import liquibase.resource.ClassLoaderResourceAccessor;
-import lombok.Builder;
 import lombok.SneakyThrows;
 import org.junit.jupiter.api.extension.AfterAllCallback;
 import org.junit.jupiter.api.extension.BeforeAllCallback;
@@ -32,7 +30,12 @@ import org.junit.jupiter.api.extension.ExtensionContext;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 
-@Builder
+/**
+ * JUnit5 extension to start a Postgres DB before all tests and stop it when they finish.
+ *
+ * <p>It is possible to set up liquibase, DB initializers to run on startup and a label to reuse the
+ * same container across multiple runs of the same tests.
+ */
 public class PostgresDBExtension implements BeforeAllCallback, AfterAllCallback {
 
   private static final String DB = "registry";
@@ -40,23 +43,40 @@ public class PostgresDBExtension implements BeforeAllCallback, AfterAllCallback 
 
   protected static final PostgreSQLContainer CONTAINER;
 
-  private String liquibaseChangeLogFile;
+  private final String liquibaseChangeLogFile;
+  private final List<DBInitializer> initializers;
 
   static {
-    CONTAINER =
-        (PostgreSQLContainer)
-            new PostgreSQLContainer(POSTGRES_IMAGE)
-                .withDatabaseName(DB)
-                .withEnv("POSTGRESQL_DATABASE", DB);
-    CONTAINER.withReuse(true).withLabel("reuse.UUID", "e06d7a87-7d7d-472e-a047-e6c81f61d2a4");
+    CONTAINER = new PostgreSQLContainer(POSTGRES_IMAGE).withDatabaseName(DB);
+    CONTAINER.withReuse(true);
     CONTAINER.setWaitStrategy(
         Wait.defaultWaitStrategy().withStartupTimeout(Duration.ofSeconds(60)));
   }
 
+  private PostgresDBExtension(
+      String liquibaseChangeLogFile, List<DBInitializer> initializers, String reuseLabel) {
+    this.liquibaseChangeLogFile = liquibaseChangeLogFile;
+    this.initializers = initializers;
+
+    if (reuseLabel != null && !reuseLabel.isEmpty()) {
+      CONTAINER.withLabel("reuse.UUID", reuseLabel);
+    }
+  }
+
+  @SneakyThrows
   @Override
   public void beforeAll(ExtensionContext context) {
     CONTAINER.start();
-    updateLiquibase();
+
+    if (liquibaseChangeLogFile != null) {
+      updateLiquibase();
+    }
+
+    if (initializers != null) {
+      for (DBInitializer initializer : initializers) {
+        initializer.init(CONTAINER.createConnection(""));
+      }
+    }
   }
 
   @Override
@@ -68,22 +88,44 @@ public class PostgresDBExtension implements BeforeAllCallback, AfterAllCallback 
     return CONTAINER;
   }
 
-  public DataSource getDatasoruce() {
-    HikariConfig hikariConfig = new HikariConfig();
-    hikariConfig.setJdbcUrl(CONTAINER.getJdbcUrl());
-    hikariConfig.setUsername(CONTAINER.getUsername());
-    hikariConfig.setPassword(CONTAINER.getPassword());
-    hikariConfig.setDriverClassName(CONTAINER.getDriverClassName());
-    return new HikariDataSource(hikariConfig);
-  }
-
   @SneakyThrows
-  public void updateLiquibase() {
+  private void updateLiquibase() {
     Database databaseLiquibase =
         DatabaseFactory.getInstance()
-            .findCorrectDatabaseImplementation(new JdbcConnection(getDatasoruce().getConnection()));
+            .findCorrectDatabaseImplementation(new JdbcConnection(CONTAINER.createConnection("")));
     Liquibase liquibase =
         new Liquibase(liquibaseChangeLogFile, new ClassLoaderResourceAccessor(), databaseLiquibase);
     liquibase.update(new Contexts());
+  }
+
+  public static PostgresDBExtensionBuilder builder() {
+    return new PostgresDBExtensionBuilder();
+  }
+
+  public static class PostgresDBExtensionBuilder {
+    private String liquibaseChangeLogFile;
+    private List<DBInitializer> dbInitializers = new ArrayList<>();
+    private String reuseLabel;
+
+    PostgresDBExtensionBuilder() {}
+
+    public PostgresDBExtensionBuilder liquibaseChangeLogFile(String liquibaseChangeLogFile) {
+      this.liquibaseChangeLogFile = liquibaseChangeLogFile;
+      return this;
+    }
+
+    public PostgresDBExtensionBuilder initializer(DBInitializer dbInitializer) {
+      this.dbInitializers.add(dbInitializer);
+      return this;
+    }
+
+    public PostgresDBExtensionBuilder reuseLabel(String reuseLabel) {
+      this.reuseLabel = reuseLabel;
+      return this;
+    }
+
+    public PostgresDBExtension build() {
+      return new PostgresDBExtension(this.liquibaseChangeLogFile, dbInitializers, reuseLabel);
+    }
   }
 }
