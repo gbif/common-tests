@@ -59,7 +59,7 @@ public class PostgresDBExtension implements BeforeAllCallback, AfterAllCallback 
     this.initializers = initializers;
 
     if (reuseLabel != null && !reuseLabel.isEmpty()) {
-      CONTAINER.withLabel("reuse.UUID", reuseLabel);
+      CONTAINER.withLabel("reuse.tag", reuseLabel);
     }
   }
 
